@@ -91,7 +91,15 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
 export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): JevAsker {
   return {
     async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model }, state, questions);
+      const request = buildJevRequest(
+        {
+          apiKey,
+          model: "typesafe/jev-1.13",
+          baseUrl: "https://openrouter.ai/api/v1/systemone",
+        },
+        state,
+        questions,
+      );
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
