@@ -1,3 +1,7 @@
+# This Fork
+
+Changed the baseUrl to openrouter
+
 # fast-jev-compaction
 
 Claude Code plugin that replaces the compaction summary with Jev decisions:
