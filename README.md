@@ -1,170 +1,198 @@
-# This Fork
-
-Changed the baseUrl to openrouter
-
 # fast-jev-compaction
 
-Claude Code plugin that replaces the compaction summary with Jev decisions:
-every tool call and result is scored in one fast request, stale ones are
-dropped or truncated, everything kept stays verbatim. Also usable as an npm
-library.
+A Claude Code plugin that replaces the built-in `/compact` summary with Jev
+decisions. Every tool call and tool result in the conversation is scored by
+TypeSafe's Jev model (served through OpenRouter); the ones no longer needed are
+dropped or truncated, and everything else stays verbatim. User and assistant
+text is never rewritten.
 
-## What and why
+This fork sends Jev requests to OpenRouter
+(`https://openrouter.ai/api/v1/systemone`, model `typesafe/jev-1.13`) instead
+of TypeSafe's own endpoint.
 
-Most context compaction asks an LLM to summarize old turns. A summary is
-lossy: a file path, exact error, constraint, or command can disappear even when
-it matters later. This library never rewrites anything. It only deletes tool
-calls and tool results Jev says are no longer needed, and it asks Jev while
-showing it the whole conversation. User and assistant text stays verbatim and
-in order.
+Our organization manages Claude Code, so the plugin is deployed as a
+**managed plugin**: an admin lists it once in the organization's managed
+settings, and each member puts a copy of this repository at a fixed path on
+their machine. A copy installed with `/plugin install` from GitHub does **not**
+work here: on a managed machine Claude Code skips `session.compact` hooks from
+plugins people install themselves, and `/compact` silently uses the built-in
+summary.
 
-The repository is both an npm package (`src/`) and a Claude Code plugin
-(`hooks/`, `.claude-plugin/`) that uses the package to replace Claude Code's
-built-in compaction summary with the original messages.
+## Install
 
-## How it works
+### Admin (once for the organization)
 
-1. Every `tool_use` is paired with its `tool_result` by `tool_use_id`. Calls in
-   the first message or in the newest `preserveRecentMessages` messages are
-   pinned and never touched.
-2. The **state** sent to Jev is the whole conversation so far, oldest first,
-   with every tool result replaced by a short note (`ok, 4213 chars (omitted)`).
-   Tool inputs are included, texts are included, nothing is summarized.
-3. The state is fitted into `maxStateTokens` (25k by default) in stages, each
-   applied only if the previous one was not enough: tool inputs truncated to
-   1000, then 200, then 60 characters; long texts abridged to head + tail,
-   oldest non-pinned messages first; old non-pinned messages collapsed to a
-   `[… N chars omitted …]` note; old tool calls reduced to one line each
-   (`t12 Read file_path=src/a.ts → ok 480ch`); old call-less messages left
-   out; runs of old call-only messages folded into one entry. If it still
-   does not fit, compaction throws. Tokens are estimated without a tokenizer (a
-   word per six letters, half a token per digit, ~one per other symbol),
-   calibrated to land a little above the counts Jev reports.
-4. For every non-pinned call Jev gets two `noul` questions: should the **call**
-   stay (knowing it was made, with its input, still matters), and should the
-   **result** stay verbatim (its contents are still needed and re-running the
-   tool would not do).
-5. Questions are split into as many requests as needed so state plus questions
-   stays under `maxRequestTokens` (30k by default, under Jev's 32k request
-   limit). The same full state is resent with every request; requests run
-   concurrently and their answers are merged.
-6. Decisions per call, against `keepThreshold`:
-   - `keepResult ≥ threshold` → keep call and result;
-   - else `keepCall ≥ threshold` → keep the call, truncate the result to its
-     first `truncateHeadChars` characters plus a one-line note;
-   - else → remove the call together with its result.
-7. The message list is rebuilt: a message that loses all its content is
-   removed, untouched messages are returned as the same objects, and no result
-   is ever left without its call.
+Done by an Owner or Primary Owner.
 
-Jev failures, malformed answers, a missing key, or a history that cannot be
-fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
+1. Open claude.ai → **Organization settings** → **Claude Code** →
+   **Managed settings**.
+2. Add these keys to the managed settings, keeping any keys already there:
 
-## Install and usage
+   ```json
+   {
+     "extraKnownMarketplaces": {
+       "fast-jev-compaction": {
+         "source": { "source": "directory", "path": "/opt/claude-plugins/fast-jev-compaction" }
+       }
+     },
+     "enabledPlugins": { "fast-jev-compaction@fast-jev-compaction": true },
+     "appendPlugins": ["fast-jev-compaction@fast-jev-compaction"]
+   }
+   ```
+
+   The marketplace key must be exactly `fast-jev-compaction`, the `name` in
+   `.claude-plugin/marketplace.json`. Any other name makes Claude Code skip
+   the plugin.
+
+### Each team member
+
+1. **Put the plugin at the managed path.** Run this in a normal terminal, not
+   with `!` inside Claude Code, since `sudo` needs to ask for your password:
+
+   ```sh
+   sudo mkdir -p /opt/claude-plugins
+   sudo git clone https://github.com/mardawi/fast-jev-compaction /opt/claude-plugins/fast-jev-compaction
+   ```
+
+   The folder must be owned by root so only an admin can change it.
+
+2. **Remove any personal install.** If you installed the plugin from GitHub
+   before, remove it inside Claude Code:
+
+   ```
+   /plugin uninstall fast-jev-compaction@fast-jev-compaction
+   /plugin marketplace remove fast-jev-compaction
+   ```
+
+   Then delete any `fast-jev-compaction` entries under `enabledPlugins` and
+   `extraKnownMarketplaces` in `~/.claude/settings.json`.
+
+3. **Turn on function hooks** by adding this to `~/.claude/settings.json`:
+
+   ```json
+   { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
+   ```
+
+4. **Restart Claude Code.** Quit every session and start `claude` again. The
+   plugin installs and enables itself from the managed settings; there is
+   nothing to install by hand. `/reload-plugins` is not enough the first time.
+
+5. **Add your OpenRouter API key.** Open `/plugin`, select
+   **fast-jev-compaction**, choose **Configure** and paste your key into
+   **TypeSafe API key**. It is stored as a secret, not in a settings file.
+   The key must be an **OpenRouter** key: the plugin sends its requests to
+   OpenRouter. (The setting is still called "TypeSafe API key" for
+   historical reasons.)
+
+   You can instead set it as an environment variable in
+   `~/.claude/settings.json`, but that stores the key in plain text:
+
+   ```json
+   { "env": { "TYPESAFE_API_KEY": "<your OpenRouter key>" } }
+   ```
+
+6. **Check that it works** (see below).
+
+### Check that it works
+
+1. Start Claude Code with debug logging: `claude --debug`.
+2. Work for a while, so the conversation has a good number of tool calls
+   (file reads, commands), then run `/compact`.
+3. Watch for the toast:
+   - `kept N/M messages, no summary (…)`: the plugin compacted the
+     conversation.
+   - `fallback to built-in summary (below 25% minimum: …)`: the plugin ran,
+     but dropping the stale tool calls would have saved less than
+     `minReductionRatio`, so it let the built-in summary run. This is normal
+     in short sessions.
+   - `fallback to built-in summary (<error>)`: the plugin ran and failed. The
+     reason is in the brackets.
+   - No toast at all: the plugin did not run. See Troubleshooting.
+4. Look at the newest log, `~/.claude/debug/latest`:
+
+   ```sh
+   grep -n "fast-jev-compaction" ~/.claude/debug/latest | grep -v "IdeaProjects\|github.com"
+   ```
+
+   A working install shows:
+
+   ```
+   hooks module fast-jev-compaction@fast-jev-compaction loaded (worker, …, tier append); events: session.compact,turn.complete
+   $.http.fetch (fast-jev-compaction): POST https://openrouter.ai/api/v1/systemone
+   $.http.fetch (fast-jev-compaction): 200 in …
+   ```
+
+### Updating
+
+Pull the new version into the managed folder, then restart Claude Code:
 
 ```sh
-npm install fast-jev-compaction
-export TYPESAFE_API_KEY=...
+sudo git -C /opt/claude-plugins/fast-jev-compaction pull
 ```
 
-```ts
-import { compactMessages, reductionRatio, type Message } from 'fast-jev-compaction';
+`/plugin update` does not apply to a managed plugin loaded from a folder.
 
-const transcript: Message[] = [
-  { role: 'user', text: 'Fix the failing test. Never edit src/generated.', toolUses: [] },
-  {
-    role: 'assistant',
-    text: '',
-    toolUses: [{ tool_use_id: 'toolu_1', tool: 'Read', input: { file_path: 'src/a.ts' } }],
-  },
-  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'toolu_1', text: '…file…' }] },
-  // …
-];
+## Configuration
 
-const result = await compactMessages(transcript, { preserveRecentMessages: 4 });
-console.log(result.messages, result.decisions, result.stats);
-if (reductionRatio(result) < 0.25) {
-  // not worth it: keep the original transcript, or summarize instead
+Set options per person in `/plugin` → **fast-jev-compaction** →
+**Configure**. To set options for everyone, add them to the managed settings
+under `pluginConfigs` (never put `apiKey` there, since every member would get
+the same key):
+
+```json
+{
+  "pluginConfigs": {
+    "fast-jev-compaction@fast-jev-compaction": {
+      "options": { "minReductionRatio": 0.15, "compactAtPercent": 70 }
+    }
+  }
 }
 ```
 
-`Message` is a subset of Claude Code's `SessionMessage`, so a session transcript
-can be passed in as is.
+| Option | Setting name in `/plugin` | Default | What it does |
+| --- | --- | --- | --- |
+| `apiKey` | TypeSafe API key | unset | Your OpenRouter key. When unset, the plugin reads `TYPESAFE_API_KEY` from the environment, then from `env` in your settings. |
+| `keepThreshold` | Keep threshold | `0.5` | Minimum Jev probability (0–1) for a tool call or result to stay. Raise it to drop more. |
+| `preserveRecentMessages` | Recent messages to preserve | `6` | Number of newest messages never touched. The first message is always kept too. |
+| `compactAtPercent` | Compaction percentage | `60` | Context usage (%) at which the plugin starts a compaction at the end of a turn. |
+| `minReductionRatio` | Minimum reduction ratio | `0.25` | Minimum share of the conversation (0–1) the plugin must remove to replace the history; below it the built-in summary runs instead. |
+| `maxStateTokens` | Maximum Jev state tokens | `25000` | Token budget for the conversation copy sent with every Jev request. Older parts are shortened to fit. |
+| `maxRequestTokens` | Maximum Jev request tokens | `30000` | Token budget for one request (conversation plus questions); larger jobs are split into several requests. Keep it under Jev's 32k limit. |
+| `truncateHeadChars` | Truncated tool result head | `300` | Characters kept from a tool result whose full output is no longer needed. `0` keeps only a one-line note. |
+| `model` | Jev model | `jev-latest` | **Currently ignored.** This fork always uses `typesafe/jev-1.13` via OpenRouter. |
 
-To bring your own transport, implement `JevAsker` (one `ask(state, questions)`
-method) and call `compact(messages, asker, options)`; `buildJevRequest` and
-`parseJevResponse` give you the HTTP request body and response validation.
-The building blocks (`collectToolCalls`, `fitState`, `batchCalls`,
-`decideCall`, `applyDecisions`) are exported too.
+### How a compaction is decided
 
-`apiKey` defaults to `process.env.TYPESAFE_API_KEY`. Never commit the key or
-put it in a source file.
+1. Each tool call is paired with its result. Calls in the first message and in
+   the newest `preserveRecentMessages` messages are pinned and never touched.
+2. Jev sees the whole conversation (tool outputs replaced by a short note) and
+   answers two questions per call: is the call still needed, and is its full
+   result still needed.
+3. Per call, against `keepThreshold`:
+   - result score ≥ threshold: keep the call and its result;
+   - else call score ≥ threshold: keep the call, cut the result to
+     `truncateHeadChars` characters plus a note;
+   - else: remove the call and its result.
+4. If the result removes less than `minReductionRatio` of the conversation,
+   or anything fails (missing key, request error, bad answer), the plugin
+   hands over to Claude Code's built-in summary.
 
-## Options
+Each compaction logs a `decisions:` line with every call's scores, visible in
+the debug log.
 
-| Option | Default | Description |
+## Troubleshooting
+
+Read `~/.claude/debug/latest` after starting Claude Code with `claude --debug`.
+
+| Log line or symptom | Cause | Fix |
 | --- | --- | --- |
-| `apiKey` | `TYPESAFE_API_KEY` | TypeSafe API key (`compactMessages`/`JevClient`) |
-| `model` | `jev-latest` | Jev model name |
-| `baseUrl` | `https://api.typesafe.ai/v1/systemone` | System One endpoint |
-| `fetch` | native `fetch` | Injectable fetch implementation for tests |
-| `goal` | last 3 user prompts | Ongoing task description included in the state |
-| `keepThreshold` | `0.5` | Minimum keep probability for a call or result to stay |
-| `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
-| `maxStateTokens` | `25000` | Estimated token ceiling for the state |
-| `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
-| `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
-
-`result.stats` reports message and character counts before and after, the
-per-reason decision counts, the state size in estimated tokens, which fitting
-stage was needed, and the number of requests.
-
-## Limitations
-
-- Only tool calls and results are candidates; text messages are never removed
-  or shortened in the output (they are only abridged in the state Jev sees).
-- Token sizes are estimates from character counts, not a tokenizer.
-- Calibration is at the request level; a probability is not a proof that a
-  result is safe to delete. The assistant can always re-run the tool.
-- The full state is repeated with every request, so a history near the state
-  ceiling costs one request per handful of questions.
-
-## Claude Code plugin
-
-The repository root is a Claude Code function-hook plugin: `hooks/fast-jev.ts`
-is a thin adapter that feeds `session.compact` transcripts through `src/` and
-falls back to Claude Code's built-in summary on errors or insufficient
-reduction. See [`hooks/README.md`](hooks/README.md) for configuration and the
-Claude Code 2.1.274 type reference.
-
-### Install in Claude Code
-
-Function hooks are an early-access Claude Code feature (2.1.274+), so the
-opt-in flag must be set wherever Claude Code runs, e.g. in `~/.claude/settings.json`:
-
-```json
-{ "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1", "TYPESAFE_API_KEY": "<your key>" } }
-```
-
-Then add this repository as a plugin marketplace and install the plugin,
-either from the shell or as slash commands inside a session:
-
-```sh
-claude plugin marketplace add tamaratran/fast-jev-compaction
-claude plugin install fast-jev-compaction@fast-jev-compaction
-```
-
-The install prompts for the plugin options (API key, thresholds, `truncateHeadChars`,
-…); leave them at their defaults to use `TYPESAFE_API_KEY` from the environment.
-Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
-auto-compaction) goes through Jev: the toast reads
-`fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
-replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
-could not remove enough (short sessions, or when it fails).
-
-To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
-from the repository root. No publishing step is required; the marketplace is
-just the repo's `.claude-plugin/marketplace.json`.
+| `session.compact bypassed by cc-plugin-sec-default (tier user)` | The plugin was installed from GitHub with `/plugin install`, so it counts as a personal plugin. | Remove the personal install (step 2) and use the managed install. |
+| `marketplace at the declared path names itself "fast-jev-compaction"` | The marketplace key in managed settings is not `fast-jev-compaction`. | Rename the key and both plugin ids in managed settings to `fast-jev-compaction`. |
+| `Skipping orphaned enabledPlugins entry …` or `appendPlugins names … skipped` | Same name mismatch, or `/opt/claude-plugins/fast-jev-compaction` does not exist. | Check the managed settings and the folder. |
+| `Remote settings: Cache still valid (304)` and the plugin is missing | Claude Code is still using the settings it cached earlier. | Quit every session and start Claude Code again. |
+| Toast `fallback to built-in summary (TYPESAFE_API_KEY is not configured)` | No key found. | Set the key (step 5). |
+| Toast `fallback to built-in summary (Jev request failed (401): …)` | The key is not a valid OpenRouter key. | Use an OpenRouter key. |
+| The plugin is missing from `/plugin` | Claude Code has not loaded it; the reason is in the log. | Restart Claude Code and check the log lines above. |
 
 ## Development
 
@@ -172,24 +200,12 @@ just the repo's `.claude-plugin/marketplace.json`.
 npm install
 npm run typecheck        # library + hook
 npm test
-npm run build
 npm run validate:plugin  # claude plugin validate
-TYPESAFE_API_KEY="$(cat ~/.typesafe_key)" npm run demo
 ```
 
-The unit tests use a fake Jev and never contact TypeSafe. The demo is the live
-network check.
+To test a change to the hook, push it, pull it into
+`/opt/claude-plugins/fast-jev-compaction` and restart Claude Code.
 
-## Animated demo (macOS)
-
-`demo/JevDemo` is a small native SwiftUI app that plays a scripted, dramatized
-version of the compaction flow inside a Claude Code-style terminal: the tool
-calls of a canned transcript are scored, results and calls Jev lets go turn red
-and collapse away, and the rest stays verbatim. It never calls the API; it
-exists to be screen recorded.
-
-```sh
-demo/JevDemo/build.sh   # builds demo/JevDemo/build/JevDemo.app and launches it
-```
-
-Press space in the app to replay from the start.
+The library in `src/` is also usable on its own; see the upstream repository,
+[tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction),
+for the library documentation.
