@@ -115,6 +115,23 @@ describe('tool call collection', () => {
     expect(calls[0]?.resultChars).toBe(fileA.length);
   });
 
+  it('pins AskUserQuestion and Skill calls wherever they sit', () => {
+    const messages = [
+      message('user', 'start'),
+      call('ask-1', 'AskUserQuestion', { questions: [] }, ''),
+      result('ask-1', 'User answered: keep the old API'),
+      call('skill-1', 'Skill', { skill: 'ship-pr' }, ''),
+      result('skill-1', 'Launching skill: ship-pr'),
+      call('read-1', 'Read', { file_path: 'src/a.ts' }, fileA),
+      result('read-1', fileA),
+    ];
+    expect(collectToolCalls(messages, 0).map((c) => [c.tool, c.pinned])).toEqual([
+      ['AskUserQuestion', true],
+      ['Skill', true],
+      ['Read', false],
+    ]);
+  });
+
   it('ignores calls without a result', () => {
     expect(collectToolCalls([message('user', 'hi'), call('x', 'Read', {}, '')], 0)).toHaveLength(0);
   });
