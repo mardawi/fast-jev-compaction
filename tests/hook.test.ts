@@ -127,6 +127,29 @@ describe('compactSession', () => {
     expect(decisionLogLines(output)).toEqual([`decisions: ${decisionLog(output)}`]);
   });
 
+  it('keeps AskUserQuestion answers and Skill instructions verbatim when Jev scores them zero', async () => {
+    const answer = 'User answered: keep the old API. '.repeat(40);
+    const instructions = 'Always run the gate before a push. '.repeat(40);
+    const session = [
+      message('user', 'Ship it.', { handle: 'h-0' }),
+      call('ask-1', 'AskUserQuestion', { questions: [] }, ''),
+      result('ask-1', answer),
+      call('skill-1', 'Skill', { skill: 'ship-pr' }, ''),
+      result('skill-1', instructions),
+      call('read-1', 'Read', { file_path: 'src/a.ts' }, fileA),
+      result('read-1', fileA),
+      message('user', 'go ahead', { handle: 'h-7' }),
+    ];
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const { result: output, messages } = await compactSession(session, config, jevFetch(() => 0));
+    expect(output.decisions.map((d) => [d.tool, d.action])).toEqual([
+      ['AskUserQuestion', 'keep'],
+      ['Skill', 'keep'],
+      ['Read', 'drop_call'],
+    ]);
+    expect(messages.flatMap((m) => m.toolResults ?? []).map((r) => r.text)).toEqual([answer, instructions]);
+  });
+
   it('splits a long decision log into ui.log lines under the host limit', async () => {
     const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
     const { result: output } = await compactSession(transcript(), config, jevFetch(() => 0.1));
