@@ -16,6 +16,9 @@ const INPUT_CHARS = [1000, 200, 60] as const;
 const TEXT_HEAD = 400;
 const TEXT_TAIL = 150;
 
+/** Tool calls whose results carry user input or loaded instructions; never offered to Jev. */
+const ALWAYS_KEEP_TOOLS = new Set(['AskUserQuestion', 'Skill']);
+
 const TOKEN_PIECES = /[A-Za-z]+|\d+|[^\sA-Za-z\d]/g;
 
 /**
@@ -84,6 +87,7 @@ export function collectToolCalls(
         resultChars: found.result.text.length,
         isError: found.result.isError ?? false,
         pinned:
+          ALWAYS_KEEP_TOOLS.has(tool.tool) ||
           isPinned(callIndex, messages.length, preserveRecentMessages) ||
           isPinned(found.index, messages.length, preserveRecentMessages),
       });
